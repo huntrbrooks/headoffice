@@ -150,6 +150,14 @@ button.ghost {
   color: #f59e0b;
 }
 
+.hint[data-tone="error"] {
+  color: #f87171;
+}
+
+.hint[data-tone="success"] {
+  color: #34d399;
+}
+
 .results {
   display: grid;
   gap: 18px;

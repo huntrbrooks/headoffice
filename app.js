@@ -1,3 +1,5 @@
+import { safeQuery, inferFranchise, inferTerritory, buildAbrAddress, extractAbrMatch } from "./logic.js";
+
 const ui = {
   form: document.getElementById("searchForm"),
   input: document.getElementById("companyInput"),
@@ -20,6 +22,7 @@ const appConfig = {
   salesTerritoryKeyword: "Australia", // adjust to your territory string
   abrJsonBase: "https://abr.business.gov.au/json",
   abrGuid: "",
+  apiProxyBase: "",
   nominatimBase: "https://nominatim.openstreetmap.org",
   osmTileUrl: "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",
 };
@@ -28,6 +31,11 @@ let recognition;
 let isListening = false;
 let mapInstance;
 let mapMarker;
+const state = {
+  loading: false,
+};
+
+const CACHE_TTL_MS = 30 * 60 * 1000; // 30 minutes
 
 document.addEventListener("DOMContentLoaded", () => {
   initialize();
@@ -75,6 +83,9 @@ function applyEnvText(text) {
         case "ABR_GUID":
           if (value) appConfig.abrGuid = value;
           break;
+        case "API_PROXY_BASE":
+          if (value) appConfig.apiProxyBase = value;
+          break;
         case "NOMINATIM_BASE":
           if (value) appConfig.nominatimBase = value;
           break;
@@ -90,9 +101,9 @@ function applyEnvText(text) {
 function bindEvents() {
   ui.form.addEventListener("submit", (event) => {
     event.preventDefault();
-    const query = ui.input.value.trim();
+    const query = safeQuery(ui.input.value);
     if (!query) {
-      setStatus("Please provide a company name.", "warn");
+      setStatus("Please provide a company name (max 140 chars).", "warn");
       return;
     }
     searchCompany(query);
@@ -109,10 +120,19 @@ function bindEvents() {
 }
 
 function initSpeech() {
+  const isSecure = window.isSecureContext || location.hostname === "localhost" || location.hostname.startsWith("127.");
+  if (!isSecure) {
+    setStatus("Voice requires HTTPS or localhost; please use a secure origin.", "warn");
+    ui.voiceButton.disabled = true;
+    ui.voiceButton.dataset.locked = "true";
+    return;
+  }
+
   const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
   if (!SpeechRecognition) {
     setStatus("Voice-to-text unavailable; you can still type the company name.", "warn");
     ui.voiceButton.disabled = true;
+    ui.voiceButton.dataset.locked = "true";
     return;
   }
 
@@ -154,28 +174,98 @@ function toggleListening() {
   recognition.start();
 }
 
+function delay(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function withJitter(base) {
+  return base + Math.floor(Math.random() * 150);
+}
+
+async function fetchWithRetry(url, options = {}, attempts = 3, baseDelay = 600) {
+  let lastError;
+  for (let i = 0; i < attempts; i += 1) {
+    try {
+      const response = await fetch(url, options);
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}`);
+      }
+      return response;
+    } catch (error) {
+      lastError = error;
+      if (i < attempts - 1) {
+        await delay(withJitter(baseDelay * (i + 1)));
+      }
+    }
+  }
+  throw lastError || new Error("Network error");
+}
+
+function cacheGet(key) {
+  try {
+    const raw = localStorage.getItem(key);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (parsed.expires && Date.now() > parsed.expires) {
+      localStorage.removeItem(key);
+      return null;
+    }
+    return parsed.value;
+  } catch (error) {
+    console.warn("Cache get failed", error);
+    return null;
+  }
+}
+
+function cacheSet(key, value, ttl = CACHE_TTL_MS) {
+  try {
+    const expires = Date.now() + ttl;
+    localStorage.setItem(key, JSON.stringify({ value, expires }));
+  } catch (error) {
+    console.warn("Cache set failed", error);
+  }
+}
+
 async function searchCompany(query) {
-  setStatus("Searching for head office and contract details…");
+  setLoading(true, "Searching for head office and contract details…");
   ui.results.hidden = true;
   ui.signals.innerHTML = "";
   ui.info.innerHTML = "";
 
   try {
     const company = await fetchCompanyData(query);
+    if (!company) {
+      setStatus("No matching Australian company found.", "warn");
+      setLoading(false);
+      return;
+    }
     renderCompany(company);
-    setStatus("Found details.");
+    setStatus("Found details.", "success");
   } catch (error) {
     console.error(error);
-    setStatus(error.message || "Unable to retrieve company data.", "warn");
+    setStatus(error.message || "Unable to retrieve company data.", "error");
+  } finally {
+    setLoading(false);
   }
 }
 
 async function fetchCompanyData(query) {
+  const cacheKey = `abr:${query.toLowerCase()}`;
+  const cached = cacheGet(cacheKey);
+  if (cached) {
+    if (cached.address && !cached.geo) {
+      cached.geo = await geocodeAddress(cached.address);
+    }
+    return cached;
+  }
+
   try {
-    const company = await fetchFromAbr(query);
+    const useProxy = Boolean(appConfig.apiProxyBase);
+    const company = useProxy ? await fetchFromProxy(query) : await fetchFromAbr(query);
     if (company.address) {
       company.geo = await geocodeAddress(company.address);
     }
+    cacheSet(cacheKey, company);
     return company;
   } catch (error) {
     console.warn("Falling back to mock data:", error);
@@ -195,21 +285,17 @@ async function fetchFromAbr(query) {
   const matchUrl = `${base}/MatchingNames.aspx?name=${encodeURIComponent(query)}&maxResults=1&guid=${encodeURIComponent(
     guid
   )}`;
-  const matchResp = await fetch(matchUrl);
-  if (!matchResp.ok) {
-    throw new Error(`ABR matching failed (${matchResp.status})`);
-  }
+  const matchResp = await fetchWithRetry(matchUrl, {}, 3, 700);
   const matchData = await matchResp.json();
   const match = extractAbrMatch(matchData);
   if (!match?.Abn) {
     throw new Error("No matching Australian company found via ABN Lookup.");
   }
 
+  await delay(400); // be courteous to ABR services
+
   const detailUrl = `${base}/AbnDetails.aspx?abn=${encodeURIComponent(match.Abn)}&guid=${encodeURIComponent(guid)}`;
-  const detailResp = await fetch(detailUrl);
-  if (!detailResp.ok) {
-    throw new Error(`ABR detail lookup failed (${detailResp.status})`);
-  }
+  const detailResp = await fetchWithRetry(detailUrl, {}, 3, 700);
   const details = await detailResp.json();
 
   const address = buildAbrAddress(details);
@@ -228,30 +314,15 @@ async function fetchFromAbr(query) {
   };
 }
 
-function extractAbrMatch(matchData) {
-  // ABR JSON MatchingNames returns either an array `Names` or a single `Name` entry; normalize defensively.
-  const names = matchData?.Names || matchData?.names || [];
-  if (Array.isArray(names) && names.length > 0) return names[0];
-  if (matchData?.Name) return matchData;
-  return null;
-}
-
-function buildAbrAddress(details) {
-  const addr = details?.MainBusinessPhysicalAddress || details?.MainBusinessPhysicalAddress?._;
-  if (!addr || typeof addr === "string") {
-    return addr || "";
+async function fetchFromProxy(query) {
+  const base = (appConfig.apiProxyBase || "").replace(/\/$/, "");
+  const url = `${base}/search?q=${encodeURIComponent(query)}`;
+  const resp = await fetchWithRetry(url, {}, 3, 700);
+  const data = await resp.json();
+  if (!data?.name) {
+    throw new Error(data?.error || "Proxy search failed.");
   }
-  const parts = [
-    addr?.StreetName && addr.StreetName,
-    addr?.StreetType && addr.StreetType,
-    addr?.Suburb && addr.Suburb,
-    addr?.StateCode && addr.StateCode,
-    addr?.Postcode && addr.Postcode,
-    "Australia",
-  ]
-    .filter(Boolean)
-    .join(" ");
-  return parts.trim();
+  return data;
 }
 
 function buildMockCompany(query) {
@@ -269,49 +340,36 @@ function buildMockCompany(query) {
   };
 }
 
-function inferFranchise(company) {
-  const type = (company.company_type || "").toLowerCase();
-  const branch = (company.branch_status || "").toLowerCase();
-  if (type.includes("franchise")) {
-    return { value: "Yes", reason: "Company type mentions franchise." };
-  }
-  if (branch.includes("branch")) {
-    return { value: "Likely", reason: "Listed as a branch entity." };
-  }
-  return { value: "Unknown", reason: "Franchise data not provided." };
-}
-
-function inferTerritory(address, keyword = "") {
-  if (!keyword) {
-    return { status: "Unknown", reason: "No territory configured." };
-  }
-  if (!address) {
-    return { status: "Unknown", reason: "Address not available." };
-  }
-  const hit = address.toLowerCase().includes(keyword.toLowerCase());
-  return {
-    status: hit ? "Inside" : "Outside",
-    reason: hit ? `Address contains ${keyword}.` : `Address missing ${keyword}.`,
-  };
-}
-
 async function geocodeAddress(address) {
   if (!address) return null;
-  const base = (appConfig.nominatimBase || "https://nominatim.openstreetmap.org").replace(/\/$/, "");
-  const geoUrl = `${base}/search?format=json&q=${encodeURIComponent(address)}&limit=1`;
-  const response = await fetch(geoUrl, {
-    headers: {
-      "Accept-Language": "en",
-      "User-Agent": "HeadOfficeLocator/0.1",
+  const cacheKey = `geo:${address.toLowerCase()}`;
+  const cached = cacheGet(cacheKey);
+  if (cached) return cached;
+
+  const proxyBase = appConfig.apiProxyBase && appConfig.apiProxyBase.replace(/\/$/, "");
+  const base = proxyBase || (appConfig.nominatimBase || "https://nominatim.openstreetmap.org").replace(/\/$/, "");
+  const geoUrl = proxyBase
+    ? `${base}/geocode?address=${encodeURIComponent(address)}`
+    : `${base}/search?format=json&q=${encodeURIComponent(address)}&limit=1`;
+  const response = await fetchWithRetry(
+    geoUrl,
+    {
+      headers: {
+        "Accept-Language": "en",
+        "User-Agent": "HeadOfficeLocator/0.1",
+      },
     },
-  });
-  if (!response.ok) {
-    throw new Error("Geocoding failed.");
-  }
+    3,
+    800
+  );
   const data = await response.json();
-  const hit = data?.[0];
+  const hit = proxyBase ? data : data?.[0];
   if (!hit) return null;
-  return { lat: parseFloat(hit.lat), lon: parseFloat(hit.lon), label: hit.display_name };
+  const geo = proxyBase
+    ? { lat: parseFloat(hit.lat), lon: parseFloat(hit.lon), label: hit.label || hit.display_name || address }
+    : { lat: parseFloat(hit.lat), lon: parseFloat(hit.lon), label: hit.display_name };
+  cacheSet(cacheKey, geo, CACHE_TTL_MS);
+  return geo;
 }
 
 function renderCompany(company) {
@@ -413,5 +471,18 @@ function renderMap(company) {
 function setStatus(message, tone = "info") {
   ui.status.textContent = message;
   ui.status.dataset.tone = tone;
+}
+
+function setLoading(loading, message) {
+  state.loading = loading;
+  ui.form.querySelectorAll("input, button").forEach((el) => {
+    el.disabled = loading;
+  });
+  const locked = ui.voiceButton.dataset.locked === "true";
+  ui.voiceButton.disabled = locked || loading;
+  ui.results.setAttribute("aria-busy", loading ? "true" : "false");
+  if (loading && message) {
+    setStatus(message, "info");
+  }
 }
 

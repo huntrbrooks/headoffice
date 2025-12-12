@@ -4,6 +4,10 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Head Office Locator</title>
+  <meta
+    http-equiv="Content-Security-Policy"
+    content="default-src 'self'; connect-src 'self' https://abr.business.gov.au https://nominatim.openstreetmap.org; script-src 'self' https://unpkg.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://unpkg.com; font-src 'self' https://fonts.gstatic.com data:; img-src 'self' data: https://*.tile.openstreetmap.org; worker-src 'self'; frame-ancestors 'self';"
+  >
   <link
     rel="stylesheet"
     href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
@@ -35,7 +39,7 @@
           </div>
         </form>
       </div>
-      <p id="status" class="hint" aria-live="polite">Ready when you are.</p>
+      <p id="status" class="hint" aria-live="polite" role="status">Ready when you are.</p>
     </section>
 
     <section class="card results" id="results" hidden>
