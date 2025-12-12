@@ -18,9 +18,8 @@ const ui = {
 
 const appConfig = {
   salesTerritoryKeyword: "Australia", // adjust to your territory string
-  opencorporatesBase: "https://api.opencorporates.com",
-  opencorporatesApiToken: "",
-  opencorporatesJurisdiction: "au", // limit search to Australian companies
+  abrJsonBase: "https://abr.business.gov.au/json",
+  abrGuid: "",
   nominatimBase: "https://nominatim.openstreetmap.org",
   osmTileUrl: "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",
 };
@@ -70,14 +69,11 @@ function applyEnvText(text) {
         case "TERRITORY_KEYWORD":
           if (value) appConfig.salesTerritoryKeyword = value;
           break;
-        case "OPENCORPORATES_BASE":
-          if (value) appConfig.opencorporatesBase = value;
+        case "ABR_JSON_BASE":
+          if (value) appConfig.abrJsonBase = value;
           break;
-        case "OPENCORPORATES_API_TOKEN":
-          if (value) appConfig.opencorporatesApiToken = value;
-          break;
-        case "OPENCORPORATES_JURISDICTION":
-          if (value) appConfig.opencorporatesJurisdiction = value;
+        case "ABR_GUID":
+          if (value) appConfig.abrGuid = value;
           break;
         case "NOMINATIM_BASE":
           if (value) appConfig.nominatimBase = value;
@@ -176,7 +172,7 @@ async function searchCompany(query) {
 
 async function fetchCompanyData(query) {
   try {
-    const company = await fetchFromOpenCorporates(query);
+    const company = await fetchFromAbr(query);
     if (company.address) {
       company.geo = await geocodeAddress(company.address);
     }
@@ -189,42 +185,73 @@ async function fetchCompanyData(query) {
   }
 }
 
-async function fetchFromOpenCorporates(query) {
-  const base = (appConfig.opencorporatesBase || "https://api.opencorporates.com").replace(/\/$/, "");
-  let url = `${base}/companies/search?q=${encodeURIComponent(query)}&per_page=1`;
-  if (appConfig.opencorporatesApiToken) {
-    url += `&api_token=${encodeURIComponent(appConfig.opencorporatesApiToken)}`;
-  }
-  if (appConfig.opencorporatesJurisdiction) {
-    url += `&jurisdiction_code=${encodeURIComponent(appConfig.opencorporatesJurisdiction)}`;
-  }
-  const response = await fetch(url);
-  if (!response.ok) {
-    throw new Error(`Lookup failed (${response.status})`);
-  }
-  const data = await response.json();
-  const first = data?.results?.companies?.[0]?.company;
-  if (!first) {
-    throw new Error("No matching company found.");
+async function fetchFromAbr(query) {
+  const base = (appConfig.abrJsonBase || "https://abr.business.gov.au/json").replace(/\/$/, "");
+  const guid = appConfig.abrGuid?.trim();
+  if (!guid) {
+    throw new Error("ABR GUID is required. Set ABR_GUID in .env.local.");
   }
 
-  const address =
-    first.registered_address_in_full ||
-    (first.registered_address || []).join(", ") ||
-    first.registered_address_lines?.join(", ");
+  const matchUrl = `${base}/MatchingNames.aspx?name=${encodeURIComponent(query)}&maxResults=1&guid=${encodeURIComponent(
+    guid
+  )}`;
+  const matchResp = await fetch(matchUrl);
+  if (!matchResp.ok) {
+    throw new Error(`ABR matching failed (${matchResp.status})`);
+  }
+  const matchData = await matchResp.json();
+  const match = extractAbrMatch(matchData);
+  if (!match?.Abn) {
+    throw new Error("No matching Australian company found via ABN Lookup.");
+  }
+
+  const detailUrl = `${base}/AbnDetails.aspx?abn=${encodeURIComponent(match.Abn)}&guid=${encodeURIComponent(guid)}`;
+  const detailResp = await fetch(detailUrl);
+  if (!detailResp.ok) {
+    throw new Error(`ABR detail lookup failed (${detailResp.status})`);
+  }
+  const details = await detailResp.json();
+
+  const address = buildAbrAddress(details);
 
   return {
-    name: first.name || query,
-    address: address || first.address,
-    jurisdiction: first.jurisdiction_code,
-    incorporationDate: first.incorporation_date,
-    companyNumber: first.company_number,
-    companyStatus: first.current_status || first.status,
-    companyType: first.company_type,
-    franchise: inferFranchise(first),
+    name: details?.EntityName || match?.Name || query,
+    address,
+    jurisdiction: "au",
+    incorporationDate: details?.Gst?.EffectiveFrom || details?.AbnStatusEffectiveFrom,
+    companyNumber: match.Abn,
+    companyStatus: details?.AbnStatus || "Unknown",
+    companyType: details?.EntityTypeName || "Australian Entity",
+    franchise: { value: "Unknown", reason: "Franchise data not provided by ABR." },
     salesTerritory: inferTerritory(address, appConfig.salesTerritoryKeyword),
-    raw: first,
+    raw: { match, details },
   };
+}
+
+function extractAbrMatch(matchData) {
+  // ABR JSON MatchingNames returns either an array `Names` or a single `Name` entry; normalize defensively.
+  const names = matchData?.Names || matchData?.names || [];
+  if (Array.isArray(names) && names.length > 0) return names[0];
+  if (matchData?.Name) return matchData;
+  return null;
+}
+
+function buildAbrAddress(details) {
+  const addr = details?.MainBusinessPhysicalAddress || details?.MainBusinessPhysicalAddress?._;
+  if (!addr || typeof addr === "string") {
+    return addr || "";
+  }
+  const parts = [
+    addr?.StreetName && addr.StreetName,
+    addr?.StreetType && addr.StreetType,
+    addr?.Suburb && addr.Suburb,
+    addr?.StateCode && addr.StateCode,
+    addr?.Postcode && addr.Postcode,
+    "Australia",
+  ]
+    .filter(Boolean)
+    .join(" ");
+  return parts.trim();
 }
 
 function buildMockCompany(query) {
