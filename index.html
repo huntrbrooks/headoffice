@@ -1,0 +1,81 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Head Office Locator</title>
+  <link
+    rel="stylesheet"
+    href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+    integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY="
+    crossorigin=""
+  />
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header class="top-bar">
+    <div class="container">
+      <div>
+        <p class="eyebrow">Voice-first search</p>
+        <h1>Head Office Locator</h1>
+        <p class="lead">Locate PTY LTD and NFP head offices with minimal input and get contract-ready context.</p>
+      </div>
+    </div>
+  </header>
+
+  <main class="container">
+    <section class="card input-card">
+      <div class="input-actions">
+        <button id="voiceButton" class="ghost" type="button">🎤 Start voice search</button>
+        <form id="searchForm" class="search-form">
+          <label for="companyInput">Or type the company name</label>
+          <div class="inline">
+            <input id="companyInput" name="company" placeholder="e.g. Example Pty Ltd" autocomplete="organization" required>
+            <button type="submit" class="primary">Search</button>
+          </div>
+        </form>
+      </div>
+      <p id="status" class="hint" aria-live="polite">Ready when you are.</p>
+    </section>
+
+    <section class="card results" id="results" hidden>
+      <div class="result-header">
+        <div>
+          <p class="eyebrow">Company</p>
+          <h2 id="resultName"></h2>
+          <p id="resultNumber" class="meta"></p>
+        </div>
+        <div class="badges">
+          <span id="franchiseBadge" class="badge">Franchise: Unknown</span>
+          <span id="territoryBadge" class="badge">Territory: Unknown</span>
+        </div>
+      </div>
+
+      <div class="grid">
+        <div>
+          <p class="eyebrow">Head office</p>
+          <p id="resultAddress" class="value"></p>
+          <p id="resultJurisdiction" class="meta"></p>
+          <p id="resultIncorp" class="meta"></p>
+          <div id="map" class="map" aria-label="Map showing head office location"></div>
+        </div>
+        <div>
+          <p class="eyebrow">Contract signals</p>
+          <ul id="signalsList" class="list"></ul>
+
+          <p class="eyebrow">Additional info</p>
+          <dl id="infoList" class="dl-list"></dl>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <script
+    src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+    integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo="
+    crossorigin=""
+  ></script>
+  <script type="module" src="app.js"></script>
+</body>
+</html>
+
