@@ -26,11 +26,13 @@ Alternatively use any static server (`npx serve .`, etc.).
 TERRITORY_KEYWORD=Australia
 OPENCORPORATES_BASE=https://api.opencorporates.com
 OPENCORPORATES_API_TOKEN=
+OPENCORPORATES_JURISDICTION=au
 NOMINATIM_BASE=https://nominatim.openstreetmap.org
 OSM_TILE_URL=https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png
 ```
 
 - Territory keyword: set via env (`TERRITORY_KEYWORD`) or edit `appConfig.salesTerritoryKeyword` in `app.js`.
+- Jurisdiction restriction: set `OPENCORPORATES_JURISDICTION=au` to limit searches to Australian companies.
 - Data sources:
   - Company search: OpenCorporates search endpoint (`https://api.opencorporates.com/companies/search?q=`). You may swap this out for a paid/commercial source or a backend proxy if rate limits/CORS become an issue.
   - Geocoding: Nominatim (OpenStreetMap). Be mindful of usage limits; for production, use your own instance or a paid geocoder.

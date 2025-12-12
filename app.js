@@ -20,6 +20,7 @@ const appConfig = {
   salesTerritoryKeyword: "Australia", // adjust to your territory string
   opencorporatesBase: "https://api.opencorporates.com",
   opencorporatesApiToken: "",
+  opencorporatesJurisdiction: "au", // limit search to Australian companies
   nominatimBase: "https://nominatim.openstreetmap.org",
   osmTileUrl: "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",
 };
@@ -74,6 +75,9 @@ function applyEnvText(text) {
           break;
         case "OPENCORPORATES_API_TOKEN":
           if (value) appConfig.opencorporatesApiToken = value;
+          break;
+        case "OPENCORPORATES_JURISDICTION":
+          if (value) appConfig.opencorporatesJurisdiction = value;
           break;
         case "NOMINATIM_BASE":
           if (value) appConfig.nominatimBase = value;
@@ -190,6 +194,9 @@ async function fetchFromOpenCorporates(query) {
   let url = `${base}/companies/search?q=${encodeURIComponent(query)}&per_page=1`;
   if (appConfig.opencorporatesApiToken) {
     url += `&api_token=${encodeURIComponent(appConfig.opencorporatesApiToken)}`;
+  }
+  if (appConfig.opencorporatesJurisdiction) {
+    url += `&jurisdiction_code=${encodeURIComponent(appConfig.opencorporatesJurisdiction)}`;
   }
   const response = await fetch(url);
   if (!response.ok) {
